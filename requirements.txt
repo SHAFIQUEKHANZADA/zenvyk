@@ -1,0 +1,15 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+python-dotenv==1.0.1
+
+# LLM routing
+litellm==1.55.10
+
+# ML: NLI (hallucination) + embeddings (drift)
+# NOTE: on Railway free tier, install CPU-only torch to avoid OOM:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch
+transformers==4.47.1
+sentence-transformers==3.3.1
