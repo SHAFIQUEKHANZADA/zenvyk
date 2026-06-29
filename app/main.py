@@ -31,6 +31,7 @@ app = FastAPI(title="Zenvyk Guardian", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=models_config.CORS_ORIGINS,
+    allow_origin_regex=models_config.CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

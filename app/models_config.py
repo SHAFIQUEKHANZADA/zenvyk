@@ -47,6 +47,12 @@ def _get_cors_origins() -> list[str]:
 
 CORS_ORIGINS: list[str] = _get_cors_origins()
 
+# Regex allowing any zenvyk.com subdomain over https (e.g. guardian.zenvyk.com).
+# Applied in addition to CORS_ORIGINS. Override via GUARDIAN_CORS_ORIGIN_REGEX.
+CORS_ORIGIN_REGEX: str = os.getenv(
+    "GUARDIAN_CORS_ORIGIN_REGEX", r"https://([a-z0-9-]+\.)?zenvyk\.com"
+)
+
 
 def entail_pass_threshold(total: int) -> int:
     """Minimum entail votes required for PASS given `total` responses."""
