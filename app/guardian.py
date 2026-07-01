@@ -55,6 +55,28 @@ def _entails(reference: str, candidate: str) -> bool:
     return label.upper().startswith("ENTAIL")
 
 
+# Phrases signalling a model refused or couldn't confidently answer (e.g. the
+# prompt references fabricated/unverifiable things). Pure consensus can't catch
+# these: the models "agree" by all refusing, which otherwise scores as PASS.
+_REFUSAL_MARKERS = (
+    "i can't", "i cannot", "i can not", "i'm unable", "i am unable", "unable to",
+    "i don't have", "i do not have", "i'm not able", "not able to",
+    "appear to be real", "doesn't exist", "does not exist", "no such",
+    "not a real", "isn't real", "is not real", "not real",
+    "no record", "no documented", "no evidence", "no verified", "no reliable",
+    "fictional", "fabricated", "made up", "made-up", "invented",
+    "i'm not aware", "i am not aware", "couldn't find", "could not find",
+    "i don't know", "i do not know", "unverifiable", "cannot verify", "can't verify",
+    "does not appear to", "doesn't appear to", "no widely",
+)
+
+
+def _is_refusal(text: str) -> bool:
+    """True if a response reads as a refusal / 'this isn't real' / 'I don't know'."""
+    t = text.lower()
+    return any(marker in t for marker in _REFUSAL_MARKERS)
+
+
 def _decide(entail_votes: int, total: int, consensus: float) -> str:
     pass_votes = models_config.entail_pass_threshold(total)
     if entail_votes >= pass_votes and consensus >= models_config.CONSENSUS_PASS_THRESHOLD:
@@ -123,6 +145,16 @@ def guardian_filter(responses: list[ModelResponse]) -> dict:
             )
 
     verdict = _decide(entail_votes, total, consensus)
+
+    # Refusal/uncertainty override: if the models declined or flagged the prompt
+    # as unanswerable (fabricated entities, no real data), a consensus PASS is
+    # misleading — nothing was actually verified. All refuse -> BLOCKED; a
+    # majority refuse -> at least FLAGGED.
+    refusal_votes = sum(1 for t in texts if _is_refusal(t))
+    if refusal_votes == total:
+        verdict = "BLOCKED"
+    elif refusal_votes * 2 >= total and verdict == "PASS":
+        verdict = "FLAGGED"
 
     return {
         "verdict": verdict,
