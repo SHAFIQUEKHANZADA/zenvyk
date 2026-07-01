@@ -9,3 +9,7 @@ env/
 *.egg-info/
 .pytest_cache/
 .DS_Store
+
+# Local dev/diagnostic scripts
+diag.py
+verify_real.py

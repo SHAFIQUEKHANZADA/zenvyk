@@ -15,7 +15,8 @@ load_dotenv()
 def _get_models() -> list[str]:
     raw = os.getenv(
         "GUARDIAN_MODELS",
-        "gpt-4o-mini,claude-3-5-sonnet-20240620,gemini/gemini-1.5-flash",
+        "gpt-4o-mini,claude-3-5-sonnet-latest,xai/grok-2-latest,"
+        "gemini/gemini-2.0-flash,groq/llama-3.3-70b-versatile",
     )
     return [m.strip() for m in raw.split(",") if m.strip()]
 
