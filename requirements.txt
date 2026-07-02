@@ -4,6 +4,9 @@ uvicorn[standard]==0.34.0
 pydantic==2.10.4
 python-dotenv==1.0.1
 
+# HTTP client for Supabase (PostgREST) auth + usage metering
+httpx>=0.27,<0.28
+
 # LLM routing
 litellm==1.55.10
 

@@ -20,6 +20,11 @@ class PerModel(BaseModel):
     error: Optional[str] = None
 
 
+class Usage(BaseModel):
+    used: int
+    limit: Optional[int] = None  # None = unlimited (enterprise)
+
+
 class VerifyResponse(BaseModel):
     verdict: Verdict
     consensus_score: float
@@ -27,6 +32,9 @@ class VerifyResponse(BaseModel):
     response: str
     per_model: list[PerModel]
     elapsed_ms: int
+    # Plan + usage meta (populated when enforcement is on) so the dashboard can show it.
+    plan: Optional[str] = None
+    usage: Optional[Usage] = None
 
 
 # ---------- /v1/chat/completions (OpenAI-compatible) ----------

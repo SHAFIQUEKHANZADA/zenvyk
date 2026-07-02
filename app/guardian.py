@@ -86,8 +86,17 @@ def _decide(entail_votes: int, total: int, consensus: float) -> str:
     return "FLAGGED"
 
 
-def guardian_filter(responses: list[ModelResponse]) -> dict:
-    """Run consensus + NLI over fanned-out responses and return a verdict dict."""
+def guardian_filter(
+    responses: list[ModelResponse],
+    *,
+    nli: bool = True,
+    drift: bool = True,
+) -> dict:
+    """Run consensus + NLI over fanned-out responses and return a verdict dict.
+
+    nli/drift are plan-gated. Free tier calls with nli=drift=False -> a "lite"
+    path: single-model, no entailment/consensus, basic block (refusal) only.
+    """
     start = time.perf_counter()
 
     ok = [r for r in responses if r.get("content")]
@@ -112,7 +121,7 @@ def guardian_filter(responses: list[ModelResponse]) -> dict:
         }
 
     texts = [r["content"] for r in ok]  # type: ignore[misc]
-    consensus = _consensus_score(texts)
+    consensus = _consensus_score(texts) if drift else 1.0
 
     # Reference = first (most-central) response; it counts as entailing itself.
     reference = texts[0]
@@ -120,7 +129,10 @@ def guardian_filter(responses: list[ModelResponse]) -> dict:
     entail_votes = 0
     for r in ok:
         content = r["content"]
-        entails = True if content == reference else _entails(reference, content)  # type: ignore[arg-type]
+        if nli:
+            entails = True if content == reference else _entails(reference, content)  # type: ignore[arg-type]
+        else:
+            entails = True  # NLI gated off (free tier): not evaluated
         if entails:
             entail_votes += 1
         per_model.append(
@@ -144,7 +156,11 @@ def guardian_filter(responses: list[ModelResponse]) -> dict:
                 }
             )
 
-    verdict = _decide(entail_votes, total, consensus)
+    if nli or drift:
+        verdict = _decide(entail_votes, total, consensus)
+    else:
+        # Free/lite tier: no NLI or drift -> basic block only (refusal check below).
+        verdict = "PASS"
 
     # Refusal/uncertainty override: if the models declined or flagged the prompt
     # as unanswerable (fabricated entities, no real data), a consensus PASS is

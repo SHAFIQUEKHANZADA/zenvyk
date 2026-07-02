@@ -38,6 +38,14 @@ EMBED_MODEL: str = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6
 # --- Server ---
 PORT: int = int(os.getenv("PORT", "8000"))
 
+# --- Plan enforcement / Supabase (server-side only; never exposed to clients) ---
+# When SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are both set, API-key auth and
+# quota enforcement turn ON. Until then the API runs open (dev mode).
+SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+# Unlimited internal/admin bypass key.
+ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "").strip()
+
 
 def _get_cors_origins() -> list[str]:
     # Comma-separated allowed origins for the browser dashboard. Use "*" to
