@@ -67,7 +67,10 @@ async def _guarded_verify(prompt: str, tenant: Tenant) -> dict:
     used = 0
     meter = supabase_client.is_configured() and not tenant.is_admin
     if meter and limit is not None:
-        used = await supabase_client.get_usage(tenant.user_id, month)
+        try:
+            used = await supabase_client.get_usage(tenant.user_id, month)
+        except Exception:  # noqa: BLE001 - usage table not ready -> don't block
+            used = 0
         if used >= limit:
             raise PlanError(
                 402,
