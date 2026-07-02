@@ -68,9 +68,14 @@ async def resolve_tenant(request: Request) -> Tenant:
     if models_config.ADMIN_API_KEY and api_key == models_config.ADMIN_API_KEY:
         return Tenant(user_id="admin", plan="enterprise", is_admin=True)
 
-    # 3. Supabase lookup.
+    # 3. Resolve the token: a Supabase login JWT (dashboard) OR an API key.
+    #    Supabase access tokens are JWTs and start with 'eyJ'.
     try:
-        user_id = await supabase_client.resolve_api_key(api_key)
+        user_id: Optional[str] = None
+        if api_key.startswith("eyJ"):
+            user_id = await supabase_client.resolve_access_token(api_key)
+        if user_id is None:
+            user_id = await supabase_client.resolve_api_key(api_key)
     except httpx.HTTPError:
         raise PlanError(
             503,

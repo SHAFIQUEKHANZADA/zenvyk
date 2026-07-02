@@ -20,7 +20,7 @@ class PlanConfig(TypedDict):
 
 PLANS: dict[str, PlanConfig] = {
     "free": {
-        "requests_per_month": 1000,
+        "requests_per_month": 10,
         "models": 1,
         "nli": False,
         "drift": False,

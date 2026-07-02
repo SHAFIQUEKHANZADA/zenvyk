@@ -56,6 +56,25 @@ async def resolve_api_key(api_key: str) -> Optional[str]:
     return row.get("user_id")
 
 
+async def resolve_access_token(token: str) -> Optional[str]:
+    """Return the user_id for a Supabase login (JWT) access token, or None.
+
+    Lets the dashboard authenticate with the logged-in user's session token
+    instead of a separate API key.
+    """
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{models_config.SUPABASE_URL.rstrip('/')}/auth/v1/user",
+            headers={
+                "apikey": models_config.SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {token}",
+            },
+        )
+    if resp.status_code != 200:
+        return None
+    return resp.json().get("id")
+
+
 async def get_user_plan(user_id: str) -> str:
     """Return the user's plan from profiles.plan, defaulting to 'free'."""
     async with httpx.AsyncClient(timeout=10) as client:
