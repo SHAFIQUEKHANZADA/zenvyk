@@ -21,11 +21,11 @@ class PlanConfig(TypedDict):
 PLANS: dict[str, PlanConfig] = {
     "free": {
         "requests_per_month": 10,
-        "models": 1,
-        "nli": False,
-        "drift": False,
-        "webhooks": False,
-        "crawler": False,
+        "models": 5,
+        "nli": True,
+        "drift": True,
+        "webhooks": True,
+        "crawler": True,
     },
     "pro": {
         "requests_per_month": 100_000,
