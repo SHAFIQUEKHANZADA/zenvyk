@@ -9,8 +9,17 @@ Verdict = Literal["PASS", "FLAGGED", "BLOCKED"]
 
 
 # ---------- /v1/verify ----------
+class SourceMessage(BaseModel):
+    role: str = "user"
+    content: str = ""
+
+
 class VerifyRequest(BaseModel):
     prompt: str = Field(..., description="The user prompt to verify across models.")
+    # Optional grounding / context (used by the dashboard Playground).
+    messages: Optional[list[SourceMessage]] = None      # prior conversation turns
+    url: Optional[str] = None                            # a link to ground against
+    document_text: Optional[str] = None                 # extracted file text to ground against
 
 
 class PerModel(BaseModel):

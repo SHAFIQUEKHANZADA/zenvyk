@@ -100,6 +100,51 @@ async def _guarded_verify(prompt: str, tenant: Tenant) -> dict:
     return result
 
 
+import re
+
+import httpx
+
+# Cap grounding text so we don't blow up token usage / latency.
+_MAX_SOURCE_CHARS = 12000
+
+
+async def _fetch_url_text(url: str) -> str:
+    """Fetch a URL and return a crude plain-text version of the page."""
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        resp = await client.get(url, headers={"User-Agent": "ZenvykGuardian/1.0"})
+    resp.raise_for_status()
+    html = resp.text
+    html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", " ", html)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+async def _effective_prompt(req: VerifyRequest) -> str:
+    """Combine conversation history + a grounding source (doc/URL) + the prompt."""
+    parts: list[str] = []
+
+    if req.messages:
+        history = "\n".join(f"{m.role}: {m.content}" for m in req.messages if m.content)
+        if history:
+            parts.append(f"Conversation so far:\n{history}")
+
+    source = (req.document_text or "").strip()
+    if not source and req.url:
+        try:
+            source = await _fetch_url_text(req.url)
+        except Exception:  # noqa: BLE001 - bad/unreachable URL shouldn't 500
+            source = ""
+    if source:
+        parts.append(
+            "Answer using ONLY the following source. If the answer isn't in it, "
+            "say you can't find it in the source.\n\nSOURCE:\n"
+            + source[:_MAX_SOURCE_CHARS]
+        )
+
+    parts.append(f"User question: {req.prompt}")
+    return "\n\n".join(parts)
+
+
 def _extract_prompt(messages: list) -> str:
     """Pull the latest user message text from an OpenAI-style message list."""
     for msg in reversed(messages):
@@ -138,7 +183,8 @@ async def stats() -> dict:
 @app.post("/v1/verify", response_model=VerifyResponse)
 async def verify(req: VerifyRequest, request: Request) -> dict:
     tenant = await resolve_tenant(request)
-    return await _guarded_verify(req.prompt, tenant)
+    prompt = await _effective_prompt(req)
+    return await _guarded_verify(prompt, tenant)
 
 
 @app.post("/v1/chat/completions")
