@@ -30,8 +30,27 @@ POST /v1/verify {"prompt":"What is the capital of France?"} → expect verdict P
 - `app/schemas.py` — Pydantic I/O models.
 - `app/plans.py` — plan table (free/pro/enterprise) + capabilities.
 - `app/auth.py` — per-request tenant/plan resolution (`resolve_tenant`, `PlanError`).
-- `app/supabase_client.py` — async Supabase REST for auth + usage metering.
-- `supabase_schema.sql` — tables (`profiles`, `api_keys`, `usage`) + `increment_usage` RPC.
+- `app/supabase_client.py` — async Supabase REST for auth + usage metering + GRI persistence.
+- `supabase_schema.sql` — tables (`profiles`, `api_keys`, `usage`, + GRI: `projects`, `project_phases`, `checkpoints`, `execution_logs`) + `increment_usage` RPC.
+- `app/gri.py` — GRI engine (pure): token/cost/runtime estimate, deliverable detect, complexity, quota+completion-probability, decision engine, provider scoring.
+- `app/gri_config.py` — GRI tunables: DELIVERABLE_PROFILES, PRICING, PROVIDER_BUDGETS, throughput, PROVIDERS, PRESENTATION_MODE (all env-overridable).
+- `app/gri_health.py` — cached provider health/latency pings (Guardian's own keys).
+- `app/gri_demo.py` — Presentation Mode illustrative payloads (labeled `presentation:true`).
+
+## Guardian Resource Intelligence (GRI) — "flight plan before takeoff"
+- Analyzes a project BEFORE the AI runs: predicts completion, splits into phases,
+  checkpoints so no work is lost, forecasts cost, routes across providers.
+- **Honesty contract:** models work run THROUGH Guardian's OWN provider keys +
+  the user's REAL Guardian plan quota (`profiles.plan` + `usage`). NEVER reads a
+  user's personal consumer-app quota (ChatGPT Plus / Claude app) — impossible;
+  never faked. Provider cards = Guardian's own key budgets/health, labeled so.
+- **Presentation Mode:** `?demo=1` (or `PRESENTATION_MODE=1`) returns clearly
+  labeled illustrative numbers for pitch screenshots. Real users always see real.
+- Endpoints: `POST /v1/resource/analyze`, `POST /v1/project/execute` (runs one
+  phase + auto-checkpoint), `POST /v1/project/checkpoint`, `POST /v1/project/resume`,
+  `GET /v1/provider/status`, `GET /v1/resource/dashboard`.
+- Quota uses the REAL `plans.py` limits (Free 10/DAY, Pro 100k/month). GRI reads
+  them; it does not change them. `tiktoken` (cl100k) for token counts, char fallback.
 
 ## Plan enforcement (auth + quota + gating)
 - **Off by default.** Enforcement activates ONLY when both `SUPABASE_URL` and
@@ -40,11 +59,19 @@ POST /v1/verify {"prompt":"What is the capital of France?"} → expect verdict P
 - **Auth (when on):** send `Authorization: Bearer <key>` or `x-api-key`. The key
   is looked up in `api_keys` → `user_id`; unknown/revoked → **401**. Plan comes
   from `profiles.plan` (default `free`). `ADMIN_API_KEY` = unlimited bypass.
-- **Quota:** monthly per-user count in `usage`, incremented atomically on each
-  successful `/v1/verify`. At/over the plan's `requests_per_month` → **402**
-  `{"error":"quota_exceeded",...}`. Enterprise (`null`) is never count-blocked.
+- **Quota (per-period):** per-user count in `usage`, incremented atomically on
+  each successful `/v1/verify`. **Free = 10 per DAY** (key `YYYY-MM-DD`, resets
+  00:00 UTC); **Pro = 100,000 per MONTH** (key `YYYY-MM`); Enterprise unlimited.
+  At/over the plan's `requests_per_period` → **402** `{"error":"quota_exceeded",
+  "period":"day|month",...}` with a "resets tomorrow/next month" message. The
+  usage key comes from `plans.period_key(plan)`.
+- **Vagueness pre-check (`/v1/verify`):** before any fan-out, `_intent_gap` runs
+  one cheap model call; if the prompt is underspecified it returns
+  `status:"NEEDS_CLARIFICATION"` + `{question, options}` (no fan-out, no quota
+  spent). Skipped when a document/URL is attached. Model via `CLARIFIER_MODEL`
+  env (defaults to `GUARDIAN_MODELS[0]`).
 - **Feature gating in `/v1/verify` + `/v1/chat/completions`:**
-  - `free` → single model, NO NLI/drift (basic refusal block only).
+  - `free` → **single model (models:1), NO NLI/drift** (basic refusal block only).
   - `pro`/`enterprise` → full 5-model ensemble + NLI + drift.
 - **Response meta:** includes `plan` and `usage:{used,limit}` for the dashboard.
 - **Secrets:** service-role key is server-side only; keys are never logged.
