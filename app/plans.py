@@ -25,14 +25,16 @@ class PlanConfig(TypedDict):
 
 
 PLANS: dict[str, PlanConfig] = {
-    # Free = 10/DAY, single-model, basic block only (matches the public pricing
-    # card: "Single-model verification" + "Basic hallucination blocking").
+    # Free = 10/DAY. TEMPORARY: Free currently gets the FULL paid capability
+    # (5-model ensemble + NLI + drift) — only the daily limit differs. To make
+    # Free single-model later, set models:1, nli:False, drift:False (this also
+    # matches the pricing card's "Single-model verification" wording).
     "free": {
         "requests_per_period": 10,
         "period": "day",
-        "models": 1,
-        "nli": False,
-        "drift": False,
+        "models": 5,
+        "nli": True,
+        "drift": True,
         "webhooks": False,
         "crawler": False,
     },

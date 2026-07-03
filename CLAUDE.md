@@ -71,7 +71,8 @@ POST /v1/verify {"prompt":"What is the capital of France?"} → expect verdict P
   spent). Skipped when a document/URL is attached. Model via `CLARIFIER_MODEL`
   env (defaults to `GUARDIAN_MODELS[0]`).
 - **Feature gating in `/v1/verify` + `/v1/chat/completions`:**
-  - `free` → **single model (models:1), NO NLI/drift** (basic refusal block only).
+  - `free` → **TEMPORARILY full capability** (5-model + NLI + drift), only the
+    10/day limit differs. Flip to single-model later via `plans.py` (models:1).
   - `pro`/`enterprise` → full 5-model ensemble + NLI + drift.
 - **Response meta:** includes `plan` and `usage:{used,limit}` for the dashboard.
 - **Secrets:** service-role key is server-side only; keys are never logged.
