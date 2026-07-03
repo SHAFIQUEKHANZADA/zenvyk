@@ -10,6 +10,9 @@ httpx>=0.27,<0.28
 # LLM routing
 litellm==1.55.10
 
+# GRI: token estimation ("flight plan before takeoff")
+tiktoken>=0.7,<0.9
+
 # ML: NLI (hallucination) + embeddings (drift)
 # NOTE: on Railway free tier, install CPU-only torch to avoid OOM:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu

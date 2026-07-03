@@ -75,6 +75,96 @@ class RouteRequest(BaseModel):
     model: str = Field(..., description="Which model to route the content to.")
 
 
+# ---------- Guardian Resource Intelligence (GRI) ----------
+Risk = Literal["LOW", "MEDIUM", "HIGH"]
+Verdict5 = Literal["PROCEED", "PHASE", "REDUCE", "QUEUE", "SWITCH_PROVIDER"]
+
+
+class Attachment(BaseModel):
+    name: str
+    tokens: Optional[int] = None
+
+
+class AnalyzeRequest(BaseModel):
+    prompt: str = Field(..., description="The project the user wants the AI to do.")
+    deliverables: Optional[list[str]] = None          # explicit deliverable types/names
+    attachments: Optional[list[Attachment]] = None    # files that add input tokens
+    history_tokens: Optional[int] = None              # prior conversation size
+
+
+class DeliverableEstimate(BaseModel):
+    name: str
+    type: str
+    est_tokens: int
+    est_runtime_sec: int
+
+
+class QuotaInfo(BaseModel):
+    plan: str
+    limit: Optional[int] = None    # None = unlimited (enterprise)
+    used: int = 0
+    remaining: Optional[int] = None  # None = unlimited
+
+
+class ProviderComparison(BaseModel):
+    key: str
+    name: str
+    remaining_budget_pct: float
+    est_needed_pct: float
+    completion_probability: float
+    risk: Risk
+    score: float
+    health: str            # healthy | degraded | down | unknown
+    latency_ms: Optional[int] = None
+
+
+class PhasePlan(BaseModel):
+    name: str
+    deliverables: list[str]
+    est_tokens: int
+    est_runtime_sec: int
+    est_ai_calls: int
+
+
+class Recommendation(BaseModel):
+    verdict: Verdict5
+    phases: Optional[list[PhasePlan]] = None
+    best_provider: str
+    message: str
+    alternatives: list[str] = []
+
+
+class AnalyzeResponse(BaseModel):
+    complexity_score: int
+    estimated_tokens: int
+    estimated_ai_calls: int
+    estimated_runtime_sec: int
+    estimated_cost_usd: float
+    deliverables: list[DeliverableEstimate]
+    quota: QuotaInfo
+    completion_probability: float
+    risk: Risk
+    recommendation: Recommendation
+    providers: list[ProviderComparison]
+    project_id: Optional[str] = None
+    presentation: bool = False
+
+
+class ExecuteRequest(BaseModel):
+    project_id: str
+    phase_index: int = 0
+
+
+class CheckpointRequest(BaseModel):
+    project_id: str
+    phase_index: int
+    output: Any
+
+
+class ResumeRequest(BaseModel):
+    project_id: str
+
+
 # ---------- /v1/chat/completions (OpenAI-compatible) ----------
 class ChatMessage(BaseModel):
     role: str

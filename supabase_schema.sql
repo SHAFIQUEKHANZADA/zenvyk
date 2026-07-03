@@ -44,3 +44,53 @@ begin
     return new_count;
 end;
 $$;
+
+-- ===========================================================================
+-- Guardian Resource Intelligence (GRI) — projects, phases, checkpoints, logs.
+-- Server-side only (service-role). Enable RLS + policies if read client-side.
+-- ===========================================================================
+
+-- One analyzed project ("flight plan").
+create table if not exists public.projects (
+    id         uuid primary key default gen_random_uuid(),
+    user_id    uuid references auth.users (id) on delete cascade,
+    prompt     text,
+    status     text not null default 'analyzed',   -- analyzed|running|done|queued
+    meta       jsonb,                               -- best_provider, estimates, etc.
+    created_at timestamptz not null default now()
+);
+create index if not exists projects_user_idx on public.projects (user_id);
+
+-- The phases a project was split into.
+create table if not exists public.project_phases (
+    project_id uuid not null references public.projects (id) on delete cascade,
+    idx        integer not null,
+    name       text,
+    status     text not null default 'pending',    -- pending|running|done
+    output_ref text,
+    primary key (project_id, idx)
+);
+
+-- Saved output after each phase so work is never lost / restarted.
+create table if not exists public.checkpoints (
+    project_id uuid not null references public.projects (id) on delete cascade,
+    phase_idx  integer not null,
+    output     jsonb,
+    saved_at   timestamptz not null default now(),
+    primary key (project_id, phase_idx)
+);
+
+-- Execution ledger: powers provider spend, avg success, dashboard.
+create table if not exists public.execution_logs (
+    id         uuid primary key default gen_random_uuid(),
+    user_id    uuid,
+    project_id uuid,
+    provider   text,
+    phase_idx  integer,
+    tokens     integer,
+    cost_usd   numeric,
+    success    boolean,
+    month      text,                                -- 'YYYY-MM' (UTC)
+    created_at timestamptz not null default now()
+);
+create index if not exists execution_logs_month_idx on public.execution_logs (month);
