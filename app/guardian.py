@@ -43,16 +43,24 @@ def _consensus_score(texts: list[str]) -> float:
     return max(0.0, min(1.0, score))
 
 
-def _entails(reference: str, candidate: str) -> bool:
-    """True if `candidate` ENTAILS `reference` per the DistilBERT MNLI model."""
-    # MNLI labels: ENTAILMENT / NEUTRAL / CONTRADICTION.
+def _agrees(reference: str, candidate: str) -> bool:
+    """True unless `candidate` CONTRADICTS `reference` per the MNLI model.
+
+    MNLI labels: ENTAILMENT / NEUTRAL / CONTRADICTION. We deliberately treat
+    NEUTRAL as agreement: two correct answers phrased differently are usually
+    labelled NEUTRAL (not ENTAILMENT), so requiring *strict* entailment produced
+    false "disagreements" and wrongly BLOCKED correct, high-consensus answers
+    (e.g. 5 models all describing the Eiffel Tower correctly but in their own
+    words). Only an active CONTRADICTION now counts against a response; semantic
+    divergence is still caught separately by the consensus (cosine) score.
+    """
     result = _nli(
         {"text": reference, "text_pair": candidate},
         truncation=True,
     )
     # transformers may return a dict or a list[dict] depending on version.
     label = (result[0] if isinstance(result, list) else result)["label"]
-    return label.upper().startswith("ENTAIL")
+    return not label.upper().startswith("CONTRADICT")
 
 
 # Phrases signalling a model refused or couldn't confidently answer (e.g. the
@@ -130,7 +138,7 @@ def guardian_filter(
     for r in ok:
         content = r["content"]
         if nli:
-            entails = True if content == reference else _entails(reference, content)  # type: ignore[arg-type]
+            entails = True if content == reference else _agrees(reference, content)  # type: ignore[arg-type]
         else:
             entails = True  # NLI gated off (free tier): not evaluated
         if entails:
