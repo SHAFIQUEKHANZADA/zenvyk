@@ -27,6 +27,8 @@ class PerModel(BaseModel):
     entails: bool
     latency_ms: int
     error: Optional[str] = None
+    answer: Optional[str] = None   # the model's (truncated) response text
+    ok: Optional[bool] = None      # alias of `entails` for the dashboard breakdown
 
 
 class Usage(BaseModel):
@@ -34,16 +36,43 @@ class Usage(BaseModel):
     limit: Optional[int] = None  # None = unlimited (enterprise)
 
 
+class Clarification(BaseModel):
+    question: str
+    options: list[str] = []
+
+
+class SourceUsed(BaseModel):
+    type: str  # "url" | "document"
+    ref: str
+
+
+# Verify can also ask the user to clarify instead of just flagging.
+VerifyStatus = Literal["PASS", "FLAGGED", "BLOCKED", "NEEDS_CLARIFICATION"]
+
+
 class VerifyResponse(BaseModel):
     verdict: Verdict
+    status: Optional[VerifyStatus] = None  # verdict, or NEEDS_CLARIFICATION
     consensus_score: float
     agreement: str  # e.g. "4/5"
     response: str
     per_model: list[PerModel]
     elapsed_ms: int
+    clarification: Optional[Clarification] = None  # set when status == NEEDS_CLARIFICATION
+    source_used: Optional[SourceUsed] = None       # set when grounded on a doc/URL
     # Plan + usage meta (populated when enforcement is on) so the dashboard can show it.
     plan: Optional[str] = None
     usage: Optional[Usage] = None
+
+
+# ---------- /v1/extract + /v1/route (conversation router/extractor) ----------
+class ExtractRequest(BaseModel):
+    url: str = Field(..., description="A link whose readable text/conversation to extract.")
+
+
+class RouteRequest(BaseModel):
+    content: str = Field(..., description="Content to send to the chosen model.")
+    model: str = Field(..., description="Which model to route the content to.")
 
 
 # ---------- /v1/chat/completions (OpenAI-compatible) ----------

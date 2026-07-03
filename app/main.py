@@ -16,11 +16,15 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import litellm
+
 from app import models_config, plans, store, supabase_client
 from app.auth import PlanError, Tenant, resolve_tenant
 from app.llm import get_responses
 from app.schemas import (
     ChatCompletionRequest,
+    ExtractRequest,
+    RouteRequest,
     VerifyRequest,
     VerifyResponse,
 )
@@ -100,6 +104,7 @@ async def _guarded_verify(prompt: str, tenant: Tenant) -> dict:
     return result
 
 
+import json
 import re
 
 import httpx
@@ -108,15 +113,55 @@ import httpx
 _MAX_SOURCE_CHARS = 12000
 
 
-async def _fetch_url_text(url: str) -> str:
-    """Fetch a URL and return a crude plain-text version of the page."""
+async def _fetch_url(url: str) -> tuple[str | None, str]:
+    """Fetch a URL; return (title, crude plain-text of the page)."""
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         resp = await client.get(url, headers={"User-Agent": "ZenvykGuardian/1.0"})
     resp.raise_for_status()
     html = resp.text
+    tmatch = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.S | re.I)
+    title = re.sub(r"\s+", " ", tmatch.group(1)).strip() if tmatch else None
     html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", html)
-    return re.sub(r"\s+", " ", text).strip()
+    return title, re.sub(r"\s+", " ", text).strip()
+
+
+def _parse_json_object(text: str) -> dict:
+    """Best-effort extract of a JSON object from a model reply (handles fences)."""
+    match = re.search(r"\{.*\}", text, flags=re.S)
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(0))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+async def _clarify(user_prompt: str, answers: list[str]) -> dict | None:
+    """When the ensemble disagreed, ask ONE clarifying question + 2-3 options
+    so the user can steer toward what they actually meant."""
+    if not models_config.GUARDIAN_MODELS:
+        return None
+    divergent = "\n\n".join(f"Answer {i + 1}: {a[:500]}" for i, a in enumerate(answers[:4]))
+    instruction = (
+        "The AI models gave differing or low-confidence answers to the user's "
+        "question. Ask ONE short clarifying question to pin down what the user "
+        "actually wants, and offer 2-3 concrete options.\n\n"
+        f"User question: {user_prompt}\n\n{divergent}\n\n"
+        'Reply ONLY with JSON: {"question": "...", "options": ["...", "...", "..."]}'
+    )
+    try:
+        resp = await litellm.acompletion(
+            model=models_config.GUARDIAN_MODELS[0],
+            messages=[{"role": "user", "content": instruction}],
+            temperature=0,
+        )
+        data = _parse_json_object(resp["choices"][0]["message"]["content"] or "")
+    except Exception:  # noqa: BLE001 - clarification is best-effort
+        return None
+    question = str(data.get("question") or "").strip()
+    options = [str(o).strip() for o in (data.get("options") or []) if str(o).strip()]
+    return {"question": question, "options": options[:3]} if question else None
 
 
 async def _effective_prompt(req: VerifyRequest) -> str:
@@ -131,7 +176,7 @@ async def _effective_prompt(req: VerifyRequest) -> str:
     source = (req.document_text or "").strip()
     if not source and req.url:
         try:
-            source = await _fetch_url_text(req.url)
+            _, source = await _fetch_url(req.url)
         except Exception:  # noqa: BLE001 - bad/unreachable URL shouldn't 500
             source = ""
     if source:
@@ -184,7 +229,59 @@ async def stats() -> dict:
 async def verify(req: VerifyRequest, request: Request) -> dict:
     tenant = await resolve_tenant(request)
     prompt = await _effective_prompt(req)
-    return await _guarded_verify(prompt, tenant)
+    result = await _guarded_verify(prompt, tenant)
+
+    # Surface the grounding source (doc/URL) to the dashboard.
+    if req.document_text:
+        result["source_used"] = {"type": "document", "ref": "uploaded document"}
+    elif req.url:
+        result["source_used"] = {"type": "url", "ref": req.url}
+
+    # Clarifying-question flow: when the ensemble is uncertain (FLAGGED), ask the
+    # user what they meant instead of just flagging a dead end.
+    status = result["verdict"]
+    if result["verdict"] == "FLAGGED":
+        answers = [
+            pm["answer"] for pm in result.get("per_model", []) if pm.get("answer")
+        ]
+        clarification = await _clarify(req.prompt, answers)
+        if clarification:
+            status = "NEEDS_CLARIFICATION"
+            result["clarification"] = clarification
+    result["status"] = status
+    return result
+
+
+@app.get("/v1/models")
+async def list_models() -> dict:
+    """Available models for the router dropdown."""
+    return {"models": models_config.GUARDIAN_MODELS}
+
+
+@app.post("/v1/extract")
+async def extract(req: ExtractRequest, request: Request) -> dict:
+    """Extract readable text (e.g. a pasted conversation) from a link."""
+    await resolve_tenant(request)
+    try:
+        title, text = await _fetch_url(req.url)
+    except Exception as exc:  # noqa: BLE001 - report failure, don't 500
+        return {"ok": False, "text": "", "title": None, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": bool(text), "text": text, "title": title, "error": None}
+
+
+@app.post("/v1/route")
+async def route(req: RouteRequest, request: Request) -> dict:
+    """Send content to a single chosen model (the conversation router)."""
+    await resolve_tenant(request)
+    try:
+        resp = await litellm.acompletion(
+            model=req.model,
+            messages=[{"role": "user", "content": req.content}],
+        )
+        answer = resp["choices"][0]["message"]["content"] or ""
+    except Exception as exc:  # noqa: BLE001 - surface provider errors as text
+        return {"model": req.model, "answer": f"[error] {type(exc).__name__}: {exc}"}
+    return {"model": req.model, "answer": answer}
 
 
 @app.post("/v1/chat/completions")

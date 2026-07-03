@@ -139,6 +139,8 @@ def guardian_filter(
             {
                 "model": r["model"],
                 "entails": entails,
+                "ok": entails,
+                "answer": (content or "")[:600],  # type: ignore[index]
                 "latency_ms": r["latency_ms"],
                 "error": None,
             }
@@ -151,6 +153,8 @@ def guardian_filter(
                 {
                     "model": r["model"],
                     "entails": False,
+                    "ok": False,
+                    "answer": None,
                     "latency_ms": r["latency_ms"],
                     "error": r.get("error"),
                 }
