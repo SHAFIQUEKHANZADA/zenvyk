@@ -46,6 +46,31 @@ end;
 $$;
 
 -- ===========================================================================
+-- Playground chat history — one row per saved conversation (per user).
+-- Read/written CLIENT-SIDE via the browser Supabase client, so RLS is REQUIRED
+-- so each user only sees their own chats.
+-- ===========================================================================
+create table if not exists public.conversations (
+    id         uuid primary key default gen_random_uuid(),
+    user_id    uuid not null references auth.users (id) on delete cascade,
+    title      text not null default 'New chat',
+    messages   jsonb not null default '[]'::jsonb,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+create index if not exists conversations_user_updated_idx
+    on public.conversations (user_id, updated_at desc);
+
+alter table public.conversations enable row level security;
+
+-- A user may fully manage only their own conversations.
+drop policy if exists "own conversations" on public.conversations;
+create policy "own conversations" on public.conversations
+    for all
+    using (auth.uid() = user_id)
+    with check (auth.uid() = user_id);
+
+-- ===========================================================================
 -- Guardian Resource Intelligence (GRI) — projects, phases, checkpoints, logs.
 -- Server-side only (service-role). Enable RLS + policies if read client-side.
 -- ===========================================================================
