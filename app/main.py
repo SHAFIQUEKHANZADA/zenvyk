@@ -158,33 +158,6 @@ def _parse_json_object(text: str) -> dict:
         return {}
 
 
-async def _clarify(user_prompt: str, answers: list[str]) -> dict | None:
-    """When the ensemble disagreed, ask ONE clarifying question + 2-3 options
-    so the user can steer toward what they actually meant."""
-    if not models_config.GUARDIAN_MODELS:
-        return None
-    divergent = "\n\n".join(f"Answer {i + 1}: {a[:500]}" for i, a in enumerate(answers[:4]))
-    instruction = (
-        "The AI models gave differing or low-confidence answers to the user's "
-        "question. Ask ONE short clarifying question to pin down what the user "
-        "actually wants, and offer 2-3 concrete options.\n\n"
-        f"User question: {user_prompt}\n\n{divergent}\n\n"
-        'Reply ONLY with JSON: {"question": "...", "options": ["...", "...", "..."]}'
-    )
-    try:
-        resp = await litellm.acompletion(
-            model=models_config.GUARDIAN_MODELS[0],
-            messages=[{"role": "user", "content": instruction}],
-            temperature=0,
-        )
-        data = _parse_json_object(resp["choices"][0]["message"]["content"] or "")
-    except Exception:  # noqa: BLE001 - clarification is best-effort
-        return None
-    question = str(data.get("question") or "").strip()
-    options = [str(o).strip() for o in (data.get("options") or []) if str(o).strip()]
-    return {"question": question, "options": options[:3]} if question else None
-
-
 # Cheap model used for the vagueness pre-check (defaults to the first ensemble model).
 _CLARIFIER_MODEL = os.getenv("CLARIFIER_MODEL", "").strip()
 
@@ -218,9 +191,14 @@ async def _intent_gap(prompt: str, messages) -> dict | None:
         "'it'/'this'/'that'/'one' with no referent; overly broad; or has multiple "
         "plausible interpretations (e.g. 'Build me a plan', 'Which one should I pick?', "
         "'Fix it'). A clear, answerable request is NOT underspecified (e.g. 'What is the "
-        "capital of France?', 'Summarize this text', 'Write a haiku about the sea'). "
-        "If the conversation already supplies the missing details, it is NOT "
-        "underspecified.\n\n"
+        "capital of France?', 'Summarize this text', 'Write a haiku about the sea').\n\n"
+        "CRITICAL RULES:\n"
+        "- If the conversation already supplies the details needed to answer, it is NOT "
+        "underspecified — the correct action is to ANSWER, not to ask again.\n"
+        "- If the assistant already asked a clarifying question and the user has now "
+        "provided information, treat it as answered (underspecified=false).\n"
+        "- When in doubt, or if any reasonable answer is possible, prefer to ACT: "
+        "respond underspecified=false. Only ask when you genuinely cannot proceed.\n\n"
         + (f"Conversation so far:\n{convo}\n\n" if convo else "")
         + f"Latest request: {prompt}\n\n"
         'Reply ONLY with JSON: {"underspecified": true|false, "question": '
@@ -309,10 +287,12 @@ async def stats() -> dict:
 async def verify(req: VerifyRequest, request: Request) -> dict:
     tenant = await resolve_tenant(request)
 
-    # FIX 2 — vagueness pre-check BEFORE the fan-out. If the prompt is too
-    # underspecified, ask a clarifying question instead of guessing. Skipped when
-    # a document/URL is attached (those are concrete, grounded tasks).
-    if not req.document_text and not req.url:
+    # FIX 2 — vagueness pre-check BEFORE the fan-out, on the FIRST turn only.
+    # Rationale (bug fix): once a conversation is underway, the answer is almost
+    # always already in context — so we ACT rather than re-ask. Running the check
+    # only when there is no prior history makes re-ask loops impossible and stops
+    # over-triggering on follow-ups. Skipped when a document/URL is attached.
+    if not req.document_text and not req.url and not req.messages:
         clarification = await _intent_gap(req.prompt, req.messages)
         if clarification:
             return {
@@ -336,18 +316,10 @@ async def verify(req: VerifyRequest, request: Request) -> dict:
     elif req.url:
         result["source_used"] = {"type": "url", "ref": req.url}
 
-    # Clarifying-question flow: when the ensemble is uncertain (FLAGGED), ask the
-    # user what they meant instead of just flagging a dead end.
-    status = result["verdict"]
-    if result["verdict"] == "FLAGGED":
-        answers = [
-            pm["answer"] for pm in result.get("per_model", []) if pm.get("answer")
-        ]
-        clarification = await _clarify(req.prompt, answers)
-        if clarification:
-            status = "NEEDS_CLARIFICATION"
-            result["clarification"] = clarification
-    result["status"] = status
+    # Clarification is handled ONLY by the first-turn pre-check above. A FLAGGED
+    # verdict here means the ensemble genuinely disagreed on a real answer — we
+    # surface it as FLAGGED and never loop back into another question.
+    result["status"] = result["verdict"]
     return result
 
 
