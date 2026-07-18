@@ -165,6 +165,25 @@ class ResumeRequest(BaseModel):
     project_id: str
 
 
+# ---------- KYB business verification ----------
+class BusinessInput(BaseModel):
+    name: str = Field(..., description="Legal business name.")
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip: Optional[str] = None
+    ein: Optional[str] = None
+    website: Optional[str] = None
+    phone: Optional[str] = None
+    industry: Optional[str] = None
+
+
+class KybVerifyRequest(BaseModel):
+    business: BusinessInput
+    # Sample scenario when running without live API keys: clean | short | watchlist.
+    scenario: Optional[str] = None
+
+
 # ---------- /v1/chat/completions (OpenAI-compatible) ----------
 class ChatMessage(BaseModel):
     role: str

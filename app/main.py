@@ -24,6 +24,9 @@ from app import (
     gri_config,
     gri_demo,
     gri_health,
+    kyb,
+    kyb_config,
+    kyb_sources,
     models_config,
     plans,
     store,
@@ -38,6 +41,7 @@ from app.schemas import (
     CheckpointRequest,
     ExecuteRequest,
     ExtractRequest,
+    KybVerifyRequest,
     ResumeRequest,
     RouteRequest,
     VerifyRequest,
@@ -674,6 +678,46 @@ async def resource_dashboard(request: Request) -> dict:
         "guardian_status": "Risk" if down else "Healthy",
         "risk": "HIGH" if down else "LOW",
         "presentation": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# KYB — Know Your Business verification (business-identity consensus)
+# ---------------------------------------------------------------------------
+@app.post("/v1/kyb/verify")
+async def kyb_verify(req: KybVerifyRequest, request: Request) -> dict:
+    """Verify a business across 5 sources in parallel (3-of-5 consensus) and
+    return a trust score + decision (AUTO_APPROVE / FLAG / REJECT).
+
+    Sources run LIVE when their API key is set (Middesk, OpenCorporates, Google
+    Places, website); otherwise they return clearly-labeled SAMPLE data. `?demo=1`
+    forces sample output for pitch screenshots.
+    """
+    await resolve_tenant(request)
+    biz = req.business.model_dump()
+    scenario = req.scenario or kyb_config.DEFAULT_SCENARIO
+    sources = await kyb_sources.gather_sources(biz, scenario, _is_demo(request))
+    return kyb.merge(biz, kyb.decide(sources))
+
+
+@app.get("/v1/kyb/sources")
+async def kyb_sources_status() -> dict:
+    """Which KYB sources are live (key configured) vs sample-only."""
+    return {
+        "sources": [
+            {
+                "key": s["key"],
+                "name": s["name"],
+                "weight": s["weight"],
+                "live": (
+                    (s["key"] == "middesk" and bool(kyb_config.MIDDESK_API_KEY))
+                    or (s["key"] == "opencorporates" and bool(kyb_config.OPENCORPORATES_API_TOKEN))
+                    or (s["key"] == "google_places" and bool(kyb_config.GOOGLE_PLACES_API_KEY))
+                    or (s["key"] == "website")
+                ),
+            }
+            for s in kyb_config.KYB_SOURCES
+        ]
     }
 
 
