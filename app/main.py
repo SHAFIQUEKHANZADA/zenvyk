@@ -243,8 +243,12 @@ async def _effective_prompt(req: VerifyRequest) -> str:
             source = ""
     if source:
         parts.append(
-            "Answer using ONLY the following source. If the answer isn't in it, "
-            "say you can't find it in the source.\n\nSOURCE:\n"
+            "Use the SOURCE below as the primary material for your response. Ground "
+            "your answer in it and do not contradict it or invent facts about it — but "
+            "you MAY summarize, quote, rewrite, extract from, or build on it to fully "
+            "complete the user's request (for example: creating a role, script, plan, "
+            "or draft based on it). Only say the source doesn't cover something when the "
+            "request genuinely cannot be completed from it.\n\nSOURCE:\n"
             + source[:_MAX_SOURCE_CHARS]
         )
 
