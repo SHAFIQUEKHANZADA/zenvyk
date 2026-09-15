@@ -71,6 +71,25 @@ create policy "own conversations" on public.conversations
     with check (auth.uid() = user_id);
 
 -- ===========================================================================
+-- Background verification jobs (Playground "leave & come back").
+-- Written/read SERVER-SIDE ONLY via the backend (service-role) — the client
+-- polls GET /v1/verify/status, which enforces per-user ownership. No client
+-- access, so RLS is not required here.
+-- ===========================================================================
+create table if not exists public.verify_jobs (
+    id         uuid primary key default gen_random_uuid(),
+    user_id    uuid references auth.users (id) on delete cascade,
+    status     text not null default 'pending',    -- pending|done|error
+    prompt     text,
+    result     jsonb,                               -- the finished verify payload
+    error      text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+create index if not exists verify_jobs_user_updated_idx
+    on public.verify_jobs (user_id, updated_at desc);
+
+-- ===========================================================================
 -- Guardian Resource Intelligence (GRI) — projects, phases, checkpoints, logs.
 -- Server-side only (service-role). Enable RLS + policies if read client-side.
 -- ===========================================================================

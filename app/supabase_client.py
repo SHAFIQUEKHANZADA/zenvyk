@@ -9,7 +9,8 @@ Nothing here logs API keys or the service-role secret.
 """
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 import httpx
 
@@ -303,6 +304,56 @@ async def execution_summary() -> dict:
         return {"avg_success": None}
     ok = sum(1 for r in rows if r.get("success"))
     return {"avg_success": round(ok / len(rows), 3)}
+
+
+# ---------------------------------------------------------------------------
+# Background verification jobs (Playground) — durable "leave & come back" store
+# ---------------------------------------------------------------------------
+async def create_verify_job(job_id: str, user_id: Optional[str], prompt: str) -> None:
+    """Insert a pending verification job the worker will finish out-of-band."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            f"{_base()}/verify_jobs",
+            headers=_headers(),
+            json={
+                "id": job_id,
+                "user_id": user_id if user_id and user_id not in ("dev", "admin") else None,
+                "status": "pending",
+                "prompt": (prompt or "")[:4000],
+            },
+        )
+    resp.raise_for_status()
+
+
+async def finish_verify_job(
+    job_id: str, status: str, result: Any, error: Optional[str]
+) -> None:
+    """Write the finished result (or error) back so a returning client can read it."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.patch(
+            f"{_base()}/verify_jobs",
+            headers=_headers(),
+            params={"id": f"eq.{job_id}"},
+            json={
+                "status": status,
+                "result": result,
+                "error": error,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    resp.raise_for_status()
+
+
+async def get_verify_job(job_id: str) -> Optional[dict]:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{_base()}/verify_jobs",
+            headers=_headers(),
+            params={"select": "*", "id": f"eq.{job_id}", "limit": "1"},
+        )
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0] if rows else None
 
 
 async def count_queued_projects() -> int:

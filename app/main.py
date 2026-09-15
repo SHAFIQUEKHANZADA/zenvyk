@@ -10,6 +10,7 @@ vars are set; see app/auth.py and app/plans.py.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 
@@ -24,6 +25,7 @@ from app import (
     gri_config,
     gri_demo,
     gri_health,
+    jobs,
     kyb,
     kyb_config,
     kyb_sources,
@@ -75,19 +77,18 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-async def _guarded_verify(prompt: str, tenant: Tenant) -> dict:
-    """Enforce the tenant's plan, run verification, meter usage, attach meta.
+async def _quota_precheck(tenant: Tenant) -> tuple[int, int | None, bool, str]:
+    """Raise PlanError(402) if the tenant is at/over their period limit.
 
-    - Quota: 402 if the tenant is at/over their monthly request limit.
-    - Feature gating: free -> single model, no NLI/drift; pro/ent -> full ensemble.
-    - Usage: incremented atomically only on a successful verification.
+    Returns (used, limit, meter, period_key) so callers can reuse the numbers.
+    Enterprise/admin (limit is None or is_admin) are never blocked. Shared by the
+    synchronous and background verify paths so both enforce identical quota.
     """
     plan_cfg = plans.get_plan(tenant.plan)
     limit = plan_cfg["requests_per_period"]
     period = plans.period_key(tenant.plan)      # 'YYYY-MM-DD' (Free/day) or 'YYYY-MM'
     noun = plans.period_noun(tenant.plan)       # 'day' or 'month'
 
-    # --- Quota check (enterprise/admin = unlimited) ---
     used = 0
     meter = supabase_client.is_configured() and not tenant.is_admin
     if meter and limit is not None:
@@ -109,6 +110,18 @@ async def _guarded_verify(prompt: str, tenant: Tenant) -> dict:
                     "period": noun,
                 },
             )
+    return used, limit, meter, period
+
+
+async def _guarded_verify(prompt: str, tenant: Tenant) -> dict:
+    """Enforce the tenant's plan, run verification, meter usage, attach meta.
+
+    - Quota: 402 if the tenant is at/over their monthly request limit.
+    - Feature gating: free -> single model, no NLI/drift; pro/ent -> full ensemble.
+    - Usage: incremented atomically only on a successful verification.
+    """
+    plan_cfg = plans.get_plan(tenant.plan)
+    used, limit, meter, period = await _quota_precheck(tenant)
 
     # --- Feature-gated fan-out + filter ---
     models = models_config.GUARDIAN_MODELS[: plan_cfg["models"]]
@@ -291,44 +304,131 @@ async def stats() -> dict:
     return store.get_stats()
 
 
-@app.post("/v1/verify", response_model=VerifyResponse)
-async def verify(req: VerifyRequest, request: Request) -> dict:
-    tenant = await resolve_tenant(request)
+def _clarification_result(clarification: dict, plan: str) -> dict:
+    """The NEEDS_CLARIFICATION payload (no fan-out, no quota spent)."""
+    return {
+        "verdict": "FLAGGED",
+        "status": "NEEDS_CLARIFICATION",
+        "consensus_score": 0.0,
+        "agreement": "0/0",
+        "response": clarification["question"],
+        "per_model": [],
+        "elapsed_ms": 0,
+        "clarification": clarification,
+        "plan": plan,
+    }
 
-    # FIX 2 — vagueness pre-check BEFORE the fan-out, on the FIRST turn only.
-    # Rationale (bug fix): once a conversation is underway, the answer is almost
-    # always already in context — so we ACT rather than re-ask. Running the check
-    # only when there is no prior history makes re-ask loops impossible and stops
-    # over-triggering on follow-ups. Skipped when a document/URL is attached.
-    if not req.document_text and not req.url and not req.messages:
-        clarification = await _intent_gap(req.prompt, req.messages)
-        if clarification:
-            return {
-                "verdict": "FLAGGED",
-                "status": "NEEDS_CLARIFICATION",
-                "consensus_score": 0.0,
-                "agreement": "0/0",
-                "response": clarification["question"],
-                "per_model": [],
-                "elapsed_ms": 0,
-                "clarification": clarification,
-                "plan": tenant.plan,
-            }
 
-    prompt = await _effective_prompt(req)
-    result = await _guarded_verify(prompt, tenant)
+def _finalize_verify(result: dict, req: VerifyRequest) -> dict:
+    """Attach the grounding source + final status to a verified result.
 
-    # Surface the grounding source (doc/URL) to the dashboard.
+    Clarification is handled ONLY by the first-turn pre-check. A FLAGGED verdict
+    here means the ensemble genuinely disagreed on a real answer — we surface it
+    as FLAGGED and never loop back into another question.
+    """
     if req.document_text:
         result["source_used"] = {"type": "document", "ref": "uploaded document"}
     elif req.url:
         result["source_used"] = {"type": "url", "ref": req.url}
-
-    # Clarification is handled ONLY by the first-turn pre-check above. A FLAGGED
-    # verdict here means the ensemble genuinely disagreed on a real answer — we
-    # surface it as FLAGGED and never loop back into another question.
     result["status"] = result["verdict"]
     return result
+
+
+async def _maybe_clarify(req: VerifyRequest, tenant: Tenant) -> dict | None:
+    """Run the first-turn vagueness pre-check; return a clarification result or None.
+
+    Rationale (bug fix): once a conversation is underway the answer is almost
+    always already in context — so we ACT rather than re-ask. Running the check
+    only when there is no prior history makes re-ask loops impossible and stops
+    over-triggering on follow-ups. Skipped when a document/URL is attached.
+    """
+    if req.document_text or req.url or req.messages:
+        return None
+    clarification = await _intent_gap(req.prompt, req.messages)
+    return _clarification_result(clarification, tenant.plan) if clarification else None
+
+
+@app.post("/v1/verify", response_model=VerifyResponse)
+async def verify(req: VerifyRequest, request: Request) -> dict:
+    tenant = await resolve_tenant(request)
+
+    clarification = await _maybe_clarify(req, tenant)
+    if clarification:
+        return clarification
+
+    prompt = await _effective_prompt(req)
+    result = await _guarded_verify(prompt, tenant)
+    return _finalize_verify(result, req)
+
+
+# ---------------------------------------------------------------------------
+# Background verification — submit + poll (browser doesn't hold the connection)
+# ---------------------------------------------------------------------------
+# Keep strong refs to in-flight tasks so they aren't garbage-collected mid-run.
+_bg_tasks: set[asyncio.Task] = set()
+
+
+async def _run_verify_job(job_id: str, req: VerifyRequest, tenant: Tenant) -> None:
+    """Do the real verification out-of-band and write the result to the job store.
+
+    Runs the SAME path as POST /v1/verify (quota, fan-out, filter, metering) so a
+    background result is identical to a synchronous one. Never raises — failures
+    are recorded on the job so the returning client sees a clear message.
+    """
+    try:
+        prompt = await _effective_prompt(req)
+        result = await _guarded_verify(prompt, tenant)
+        await jobs.finish(job_id, result=_finalize_verify(result, req))
+    except PlanError as exc:  # quota ran out between submit and execution
+        await jobs.finish(job_id, error=str(exc.body.get("message") or "quota_exceeded"))
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash the worker
+        await jobs.finish(job_id, error=f"{type(exc).__name__}: {exc}")
+
+
+@app.post("/v1/verify/async")
+async def verify_async(req: VerifyRequest, request: Request) -> dict:
+    """Submit a verification that keeps running server-side after the client leaves.
+
+    Returns immediately with a `job_id` to poll via GET /v1/verify/status. A vague
+    first turn still returns a clarification inline (no job, no quota). Quota is
+    checked now so an over-limit user gets 402 up front instead of a dead job.
+    """
+    tenant = await resolve_tenant(request)
+
+    clarification = await _maybe_clarify(req, tenant)
+    if clarification:
+        # No background work needed — answer inline, exactly like the sync path.
+        return {"job_id": None, **clarification}
+
+    await _quota_precheck(tenant)  # 402 now if the user is already over their limit
+
+    job_id = await jobs.create(tenant.user_id, req.prompt)
+    task = asyncio.create_task(_run_verify_job(job_id, req, tenant))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return {"job_id": job_id, "status": "pending"}
+
+
+@app.get("/v1/verify/status")
+async def verify_status(job_id: str, request: Request) -> Response:
+    """Read a background job's status/result. Owner-scoped so no cross-user reads."""
+    tenant = await resolve_tenant(request)
+    job = await jobs.get(job_id)
+    if not job:
+        return JSONResponse(status_code=404, content={"error": "job_not_found"})
+
+    owner = job.get("user_id")
+    if owner and not tenant.is_admin and tenant.user_id != owner:
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+
+    return JSONResponse(
+        content={
+            "job_id": job_id,
+            "status": job.get("status"),
+            "result": job.get("result"),
+            "error": job.get("error"),
+        }
+    )
 
 
 @app.get("/v1/models")
