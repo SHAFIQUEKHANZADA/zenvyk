@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -28,6 +29,11 @@ import litellm
 
 # Tolerate provider-specific param quirks (e.g. models that reject temperature).
 litellm.drop_params = True
+
+# Audit log — every model's raw response per request (visible in Railway logs)
+# so a verdict can always be traced back to what each model actually said.
+log = logging.getLogger("guardian.verify")
+log.setLevel(logging.INFO)
 
 # --- Tunables (env-overridable) ---
 # Per-model call timeout. A model that exceeds it is recorded as ERROR.
@@ -88,10 +94,14 @@ async def generate_answer(prompt: str, model: str) -> tuple[str, Optional[str]]:
             ),
             timeout=VERIFY_TIMEOUT_S,
         )
-        return (resp["choices"][0]["message"]["content"] or "").strip(), None
+        answer = (resp["choices"][0]["message"]["content"] or "").strip()
+        log.info("[generate] model=%s len=%d answer=%r", model, len(answer), answer[:500])
+        return answer, None
     except asyncio.TimeoutError:
+        log.info("[generate] model=%s ERROR=timeout", model)
         return "", "timeout"
     except Exception as exc:  # noqa: BLE001 - surface, don't crash the run
+        log.info("[generate] model=%s ERROR=%s", model, exc)
         return "", f"{type(exc).__name__}: {exc}"
 
 
@@ -116,6 +126,7 @@ async def _verify_one(question: str, answer: str, model: str) -> dict:
         data = _extract_json(raw)
         verdict = str(data.get("verdict", "")).upper()
         reason = str(data.get("reason", "")).strip()
+        log.info("[verify] model=%s parsed=%s raw=%r", model, verdict or "?", raw[:500])
         if verdict not in ("PASS", "FLAG"):
             # Parse failure = ERROR, NOT a silent FLAG.
             return {
@@ -223,4 +234,8 @@ async def run_verification(
     results = await verify_answer(question, answer, models)
     out = _build_result(answer, results)
     out["elapsed_ms"] = int((time.perf_counter() - start) * 1000)
+    log.info(
+        "[result] verdict=%s agreement=%s score=%s question=%r",
+        out["verdict"], out["agreement"], out["consensus_score"], question[:200],
+    )
     return out
