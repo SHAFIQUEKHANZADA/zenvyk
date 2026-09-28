@@ -24,11 +24,13 @@ class VerifyRequest(BaseModel):
 
 class PerModel(BaseModel):
     model: str
-    entails: bool
     latency_ms: int
     error: Optional[str] = None
-    answer: Optional[str] = None   # the model's (truncated) response text
-    ok: Optional[bool] = None      # alias of `entails` for the dashboard breakdown
+    answer: Optional[str] = None    # the model's (truncated) response text, if any
+    ok: Optional[bool] = None       # True when this verifier passed the answer
+    verdict: Optional[str] = None   # per-verifier: "PASS" | "FLAG" | "ERROR"
+    reason: Optional[str] = None    # why this verifier passed/flagged (transparency)
+    entails: Optional[bool] = None  # legacy field (kept for backward compatibility)
 
 
 class Usage(BaseModel):

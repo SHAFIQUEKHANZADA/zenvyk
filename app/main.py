@@ -33,9 +33,9 @@ from app import (
     plans,
     store,
     supabase_client,
+    verify_engine,
 )
 from app.auth import PlanError, Tenant, resolve_tenant
-from app.llm import get_responses
 from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -49,9 +49,6 @@ from app.schemas import (
     VerifyRequest,
     VerifyResponse,
 )
-
-# Importing guardian loads the NLI + embedding models ONCE at startup.
-from app.guardian import guardian_filter
 
 app = FastAPI(title="Zenvyk Guardian", version="0.1.0")
 
@@ -116,17 +113,21 @@ async def _quota_precheck(tenant: Tenant) -> tuple[int, int | None, bool, str]:
 async def _guarded_verify(prompt: str, tenant: Tenant) -> dict:
     """Enforce the tenant's plan, run verification, meter usage, attach meta.
 
-    - Quota: 402 if the tenant is at/over their monthly request limit.
-    - Feature gating: free -> single model, no NLI/drift; pro/ent -> full ensemble.
+    - Quota: 402 if the tenant is at/over their period request limit.
+    - Generate one clean answer, then verify it across the plan's model panel.
+      Each verifier returns PASS/FLAG + a reason; score/agreement/verdict all
+      come from that one result set (never contradictory). The verifiers see the
+      same grounded context (history + doc/URL), so document verification works.
     - Usage: incremented atomically only on a successful verification.
     """
     plan_cfg = plans.get_plan(tenant.plan)
     used, limit, meter, period = await _quota_precheck(tenant)
 
-    # --- Feature-gated fan-out + filter ---
+    # --- Generate one answer, then fan out independent verifiers ---
     models = models_config.GUARDIAN_MODELS[: plan_cfg["models"]]
-    responses = await get_responses(prompt, models)
-    result = guardian_filter(responses, nli=plan_cfg["nli"], drift=plan_cfg["drift"])
+    result = await verify_engine.run_verification(
+        question=prompt, generator_prompt=prompt, models=models
+    )
     store.record(prompt, result)
 
     # --- Meter usage on success (atomic increment) ---
@@ -343,6 +344,10 @@ async def _maybe_clarify(req: VerifyRequest, tenant: Tenant) -> dict | None:
     over-triggering on follow-ups. Skipped when a document/URL is attached.
     """
     if req.document_text or req.url or req.messages:
+        return None
+    # Only short, genuinely-ambiguous asks get gated. A long/detailed message is
+    # almost always answerable — never make the user "clarify" a paragraph.
+    if len(req.prompt.split()) > 20:
         return None
     clarification = await _intent_gap(req.prompt, req.messages)
     return _clarification_result(clarification, tenant.plan) if clarification else None
