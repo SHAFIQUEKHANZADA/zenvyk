@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from typing import Optional
 
@@ -32,8 +33,16 @@ litellm.drop_params = True
 
 # Audit log — every model's raw response per request (visible in Railway logs)
 # so a verdict can always be traced back to what each model actually said.
+# Attach our OWN stdout handler so the lines show up under uvicorn/Railway (a
+# bare logger would otherwise be swallowed — uvicorn doesn't wire the root
+# logger to stdout at INFO).
 log = logging.getLogger("guardian.verify")
+if not log.handlers:
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(logging.Formatter("%(asctime)s [guardian.verify] %(message)s"))
+    log.addHandler(_handler)
 log.setLevel(logging.INFO)
+log.propagate = False
 
 # --- Tunables (env-overridable) ---
 # Per-model call timeout. A model that exceeds it is recorded as ERROR.
